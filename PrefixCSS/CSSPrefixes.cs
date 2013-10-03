@@ -9,166 +9,213 @@ namespace PrefixCSS
 {
 	class CSSPrefixes
 	{
-		private static readonly Regex rxPrefixedLine = new Regex(@"^\s*-(?:ms|moz|webkit|o)-", RegexOptions.Compiled);
-		private static readonly Regex rxPrefixedAtKeyframes = new Regex(@"^\s*@-(?:ms|moz|webkit|o)-keyframes", RegexOptions.Compiled);
-		private static readonly Regex rxCalc = new Regex(@"\bcalc\((?<inner>.+?)\)\s*;");
+        private static readonly Regex rxPrefixedLine = new Regex(@"^\s*-(?:ms|moz|webkit|o)-|-(?:ms|moz|webkit|o)-calc|/\*\s*calc\s+fallback\s*\*/", RegexOptions.Compiled);
+		private static readonly Regex rxPrefixedAtKeyframes = new Regex(@"^\s*@-(?:ms|moz|webkit|o)-keyframes\b", RegexOptions.Compiled);
+        private static readonly Regex rxUnprefixedAtKeyframes = new Regex(@"^\s*@keyframes\b", RegexOptions.Compiled);
+        private static readonly Regex rxCalc = new Regex(@"\b(?<!\-)calc\((?<inner>.+?)\)\s*;");
 		private static readonly Regex rxPercentUnits = new Regex(@"[\-\d\.]+%");
 
-		private static readonly Regex rxPropertiesToWebkitPrefix = new Regex(@"\b(?<!\-)(?<keyword>transform|transition|animation|user-select|font-feature-settings|box-sizing)\b", RegexOptions.Compiled);
-		private static readonly Regex rxPropertiesToMozPrefix = new Regex(@"\b(?<!\-)(?<keyword>transform|transition|animation|user-select|font-feature-settings|box-sizing)\b", RegexOptions.Compiled);
+        private static readonly Regex rxPropertiesToWebkitPrefix = new Regex(@"\b(?<!\-)(?<keyword>keyframes|transform|transition|animation|user-select|font-feature-settings|box-sizing)\b", RegexOptions.Compiled);
+		private static readonly Regex rxPropertiesToMozPrefix = new Regex(@"\b(?<!\-)(?<keyword>keyframes|transform|transition|animation|user-select|font-feature-settings|box-sizing)\b", RegexOptions.Compiled);
 		private static readonly Regex rxPropertiesToMsPrefix = new Regex(@"\b(?<!\-)(?<keyword>user-select|font-feature-settings)\b", RegexOptions.Compiled);
 
 		public static void Add(string filepath)
 		{
-			var fileName = Path.GetFileName(filepath);
-			var lines = new List<string>(File.ReadAllLines(filepath, Encoding.UTF8));
+		    List<string> lines;
+		    try
+		    {
+		        lines = new List<string>(File.ReadAllLines(filepath, Encoding.UTF8));
+		    }
+		    catch (IOException ioex)
+		    {
+                Console.WriteLine("Error '{0}' reading {1}", ioex.Message, filepath);
+		        return;
+		    }
+
+		    var preCleanCount = lines.Count;
 
 			ClearExistingPrefixes(lines);
 
-			var nChanges = 0;
-			nChanges += AddVendorPrefix("-webkit-", lines, rxPropertiesToWebkitPrefix, fileName);
-			nChanges += AddVendorPrefix("-moz-", lines, rxPropertiesToMozPrefix, fileName);
-			nChanges += AddVendorPrefix("-ms-", lines, rxPropertiesToMsPrefix, fileName);
+            if (lines.Count != preCleanCount)
+            {
+                Console.WriteLine("{1} vendor-prefixed lines found in {0}", filepath, preCleanCount - lines.Count);
+                var cleanFilePath = filepath + ".clean.css";
+                File.WriteAllLines(cleanFilePath, lines, Encoding.UTF8);
+                Console.WriteLine("Created {0}", cleanFilePath);
+            }
 
-			if (nChanges == 0)
+		    var preAddCount = lines.Count;
+
+            AddVendorPrefix("-ms-", lines, rxPropertiesToMsPrefix);
+            AddVendorPrefix("-moz-", lines, rxPropertiesToMozPrefix);
+            AddVendorPrefix("-webkit-", lines, rxPropertiesToWebkitPrefix);
+			
+			if (lines.Count != preAddCount)
 			{
-				Console.WriteLine("No changes made in {0}", fileName);
+			    Console.WriteLine("{1} vendor-prefixed lines added to {0}", filepath, lines.Count - preAddCount);
+			    var newFilePath = filepath + ".prefixed.css";
+			    File.WriteAllLines(newFilePath, lines, Encoding.UTF8);
+			    Console.WriteLine("Created {0}", newFilePath);
+			}
+			else
+			{
+			    Console.WriteLine("No vendor-prefixed lines added to {0}", filepath);
 			}
 
-			var newFilePath = filepath + ".prefixed.css";
-			File.WriteAllLines(newFilePath, lines, Encoding.UTF8);
-			Console.WriteLine("Created {0} from {1}", newFilePath, filepath);
 		}
 
-		private static int AddVendorPrefix(string prefix, IList<string> lines, Regex rxPropertyToPrefix, string fileName)
+		private static void AddVendorPrefix(string prefix, IList<string> lines, Regex rxPropertyToPrefix)
 		{
-			var nChanges = 0;
-
 			for (var i = 0; i < lines.Count; ++i)
 			{
+                if (rxPrefixedAtKeyframes.IsMatch(lines[i]))
+                {
+                    //  skip the already-prefixed keyframes block
+                    i += CollectBlock(lines, i).Count - 1;  // -1 because of the for-loop increment
+                    continue;
+                }
 
-				if (prefix != "-ms-" && lines[i].StartsWith("@keyframes "))
+				if (rxUnprefixedAtKeyframes.IsMatch(lines[i]))
 				{
-					var prefixedKeyframes = new List<string> { string.Empty, lines[i].Replace("keyframes", prefix + "keyframes") };
+				    var blockLines = CollectBlock(lines, i);
 
-					//	make a copy of the keyframes block with vendor prefixes
-					while (lines[++i] != "}")
-					{
-						prefixedKeyframes.Add(rxPropertyToPrefix.Replace(lines[i], match => prefix + match.Value));
-					}
-					prefixedKeyframes.Add(lines[i++]);
+				    if (prefix != "-ms-")
+				    {
+				        //  insert each line of the collected block prefixing the relevant keywords
+				        foreach (var line in blockLines)
+				        {
+				            lines.Insert(i, rxPropertyToPrefix.Replace(line, match => prefix + match.Value));
+				            ++i;
+				        }
+				    }
 
-					for (var j = prefixedKeyframes.Count - 1; j >= 0; --j)
-					{
-						lines.Insert(i, prefixedKeyframes[j]);
-					}
-					i += prefixedKeyframes.Count;// place i just beyond our inserted block
+				    //  skip over the unprefixed keyframes block
+                    i += blockLines.Count - 1;  // -1 because of the for-loop increment
+                    continue;
 				}
 
-				//	this can happen if we just processed keyframes
-				if (!(i < lines.Count))
-					break;
+			    if (rxCalc.IsMatch(lines[i]))
+			    {
+			        if (prefix != "-ms-")
+			        {
+			            //  add a prefixed calc() for all but -ms-
+			            lines.Insert(i, rxCalc.Replace(lines[i], match => prefix + match.Value));
+			            ++i; // adjust for inserted line
+			        }
+			        else
+			        {
+			            var noCalc = rxCalc.Replace(lines[i], delegate(Match match)
+			                {
+			                    var exp = match.Groups["inner"].Value;
 
-				if (rxCalc.IsMatch(lines[i]))
+			                    var percentUnitsMatch = rxPercentUnits.Match(exp);
+                                if (percentUnitsMatch.Success)
+			                    {
+                                    Console.WriteLine(">> Questionable fallback of {1} added for '{0}'", match.Value, percentUnitsMatch.Value);
+                                    return percentUnitsMatch.Value + ";";
+			                    }
+
+			                    exp = exp.Replace("px", "");
+			                    try
+			                    {
+			                        var result = Convert.ToDouble(new DataTable().Compute(exp, null));
+			                        var roundedResult = Math.Round(result, 0);
+
+			                        if (result < roundedResult || result > roundedResult)
+			                            Console.WriteLine(">> '{0}' resulted in fractional value {1}; fallback rounded to {2}", match.Value, result, roundedResult);
+
+			                        return string.Format("{0}px;", roundedResult);
+			                    }
+			                    catch (SyntaxErrorException)
+			                    {
+			                        Console.WriteLine("!! Could not compute '{0}'; no fallback added", match.Value);
+			                        return match.Value;
+			                    }
+			                }
+                        );
+
+                        if (noCalc != lines[i])
+                        {
+                            //  add a fallback value when we're doing -ms-
+                            lines.Insert(i, noCalc + " /* calc fallback */");
+                            ++i; // adjust for inserted line
+                        }
+			        }
+			    }
+
+			    if (rxPropertyToPrefix.IsMatch(lines[i]))
 				{
-					++nChanges;
-
-					lines[i] = rxCalc.Replace(lines[i], delegate(Match match)
-					{
-						var exp = match.Groups["inner"].Value;
-
-						if (rxPercentUnits.IsMatch(exp))
-						{
-							Console.WriteLine("    Skipping '{0}' in {1}", match.Value, fileName);
-							return match.Value;
-						}
-
-						exp = exp.Replace("px", "");
-						try
-						{
-							var result = Convert.ToDouble(new DataTable().Compute(exp, null));
-							var roundedResult = Math.Round(result, 0);
-
-							if (result < roundedResult || result > roundedResult)
-								Console.WriteLine("    '{0}' resulted in odd value {1}; rounding to {2}", match.Value, result, roundedResult);
-
-							return string.Format("{0}px;", roundedResult);
-						}
-						catch (SyntaxErrorException)
-						{
-							Console.WriteLine("!! Could not compute '{0}' in {1}", match.Value, fileName);
-							return match.Value;
-						}
-					});
-				}
-
-				if (rxPropertyToPrefix.IsMatch(lines[i]))
-				{
-					++nChanges;
-					var prefixedLine = rxPropertyToPrefix.Replace(lines[i], match => prefix + match.Value);
-					lines.Insert(i, prefixedLine);
+				    lines.Insert(i, rxPropertyToPrefix.Replace(lines[i], match => prefix + match.Value));
 					++i;	// adjust for inserted line
 				}
 			}
-
-			return nChanges;
 		}
 
 		private static void ClearExistingPrefixes(IList<string> lines)
 		{
-			//	take care of the single-line rules
+			//	remove the single-line rules
 			for (var i = 0; i < lines.Count; ++i)
 			{
 				if (!rxPrefixedLine.IsMatch(lines[i]))
 					continue;
 
-				Console.WriteLine("Removed '{0}'", lines[i]);
+				Console.WriteLine("Removed '{0}'", lines[i].Trim());
 
 				lines.RemoveAt(i);
 				--i;	// adjust for removed line
 			}
 
+            //  remove the prefixed @keyframes blocks
 			for (var i = 0; i < lines.Count; ++i)
 			{
 				if (!rxPrefixedAtKeyframes.IsMatch(lines[i]))
 					continue;
 
-				Console.WriteLine("Removed '{0}'", lines[i]);
+				Console.WriteLine("Removed '{0}'", lines[i].Trim());
 
-				var startDeletingAt = i;
-				var braces = 0;
-
-				//	find the opening brace
-				while (braces == 0)
-				{
-					if (lines[i].Contains("{"))
-						braces = 1;
-
-					++i;
-				}
-
-				while (braces > 0)
-				{
-					if (lines[i].Contains("{"))
-						++braces;
-
-					if (lines[i].Contains("}"))
-						--braces;
-
-					++i;
-				}
-
-				//	i is now below the closing brace
-				var linesToDelete = i - startDeletingAt;
+				var linesToDelete = CollectBlock(lines, i).Count;
 
 				while (linesToDelete > 0)
 				{
-					lines.RemoveAt(startDeletingAt);
+					lines.RemoveAt(i);
 					--linesToDelete;
 				}
 
-				i = startDeletingAt - 1;	// adjust i for the removal and the for loop increment
-			}
+                --i;	// adjust for removed line
+            }
 		}
+
+        private static List<string> CollectBlock(IList<string> lines, int i)
+	    {
+	        var blockLines = new List<string>();
+
+	        var braces = 0;
+
+	        //	find the opening brace
+	        while (braces == 0)
+	        {
+                blockLines.Add(lines[i]);
+
+                if (lines[i].Contains("{"))
+	                braces = 1;
+
+	            ++i;
+	        }
+
+	        while (braces > 0)
+	        {
+                blockLines.Add(lines[i]);
+                
+                if (lines[i].Contains("{"))
+	                ++braces;
+
+	            if (lines[i].Contains("}"))
+	                --braces;
+
+	            ++i;
+	        }
+
+	        return blockLines;
+	    }
 	}
 }
