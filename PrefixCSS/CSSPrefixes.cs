@@ -9,7 +9,9 @@ namespace PrefixCSS
 {
 	class CSSPrefixes
 	{
-        private static readonly Regex rxPrefixedLine = new Regex(@"^\s*-(?:ms|moz|webkit|o)-|-(?:ms|moz|webkit|o)-calc|/\*\s*calc\s+fallback\s*\*/", RegexOptions.Compiled);
+	    private const string CleanCssSuffix = ".clean.css";
+	    private const string PrefixedCssSuffix = ".prefixed.css";
+	    private static readonly Regex rxPrefixedLine = new Regex(@"^\s*-(?:ms|moz|webkit|o)-|-(?:ms|moz|webkit|o)-calc|/\*\s*calc\s+fallback\s*\*/", RegexOptions.Compiled);
 		private static readonly Regex rxPrefixedAtKeyframes = new Regex(@"^\s*@-(?:ms|moz|webkit|o)-keyframes\b", RegexOptions.Compiled);
         private static readonly Regex rxUnprefixedAtKeyframes = new Regex(@"^\s*@keyframes\b", RegexOptions.Compiled);
         private static readonly Regex rxCalc = new Regex(@"\b(?<!\-)calc\((?<inner>.+?)\)\s*;");
@@ -17,32 +19,39 @@ namespace PrefixCSS
 
         private static readonly Regex rxPropertiesToWebkitPrefix = new Regex(@"\b(?<!\-)(?<keyword>keyframes|transform|transition|animation|user-select|font-feature-settings|box-sizing)\b", RegexOptions.Compiled);
 		private static readonly Regex rxPropertiesToMozPrefix = new Regex(@"\b(?<!\-)(?<keyword>keyframes|transform|transition|animation|user-select|font-feature-settings|box-sizing)\b", RegexOptions.Compiled);
-		private static readonly Regex rxPropertiesToMsPrefix = new Regex(@"\b(?<!\-)(?<keyword>user-select|font-feature-settings)\b", RegexOptions.Compiled);
+		private static readonly Regex rxPropertiesToMsPrefix = new Regex(@"\b(?<!\-)(?<keyword>transform|user-select|font-feature-settings)\b", RegexOptions.Compiled);
 
 		public static void Add(string filepath)
 		{
-		    List<string> lines;
-		    try
-		    {
-		        lines = new List<string>(File.ReadAllLines(filepath, Encoding.UTF8));
-		    }
-		    catch (IOException ioex)
-		    {
-                Console.WriteLine("Error '{0}' reading {1}", ioex.Message, filepath);
-		        return;
-		    }
-
-		    var preCleanCount = lines.Count;
-
-			ClearExistingPrefixes(lines);
-
-            if (lines.Count != preCleanCount)
+            if (!File.Exists(filepath))
             {
-                Console.WriteLine("{1} vendor-prefixed lines found in {0}", filepath, preCleanCount - lines.Count);
-                var cleanFilePath = filepath + ".clean.css";
-                File.WriteAllLines(cleanFilePath, lines, Encoding.UTF8);
-                Console.WriteLine("Created {0}", cleanFilePath);
+                Console.WriteLine("{0} does not exist!", filepath);
+                return;
             }
+
+            var originalLastWriteTime = File.GetLastWriteTime(filepath);
+            var prefixedFilePath = filepath + PrefixedCssSuffix;
+
+            if (File.Exists(prefixedFilePath))
+		    {
+		        var prefixedLastWriteTime = File.GetLastWriteTime(prefixedFilePath);
+		        if (prefixedLastWriteTime == originalLastWriteTime)
+		        {
+		            Console.WriteLine("{0} is up-to-date", prefixedFilePath);
+		            return;
+		        }
+
+                if (prefixedLastWriteTime > originalLastWriteTime)
+		        {
+		            Console.WriteLine("Prefixed file is newer than {0}! Creating cleaned version of prefixed file instead.");
+                    ReadLinesAndClean(prefixedFilePath);
+		            return;
+		        }
+		    }
+
+		    List<string> lines;
+		    if (ReadLinesAndClean(filepath, out lines))
+                return;
 
 		    var preAddCount = lines.Count;
 
@@ -53,9 +62,9 @@ namespace PrefixCSS
 			if (lines.Count != preAddCount)
 			{
 			    Console.WriteLine("{1} vendor-prefixed lines added to {0}", filepath, lines.Count - preAddCount);
-			    var newFilePath = filepath + ".prefixed.css";
-			    File.WriteAllLines(newFilePath, lines, Encoding.UTF8);
-			    Console.WriteLine("Created {0}", newFilePath);
+			    File.WriteAllLines(prefixedFilePath, lines, Encoding.UTF8);
+                File.SetLastWriteTime(prefixedFilePath, originalLastWriteTime);
+			    Console.WriteLine("Created {0}", prefixedFilePath);
 			}
 			else
 			{
@@ -63,6 +72,41 @@ namespace PrefixCSS
 			}
 
 		}
+
+	    private static void ReadLinesAndClean(string filepath)
+	    {
+	        List<string> lines;
+	        ReadLinesAndClean(filepath, out lines);
+	    }
+
+	    private static bool ReadLinesAndClean(string filepath, out List<string> lines)
+	    {
+            lines = new List<string>();
+
+	        try
+	        {
+	            lines = new List<string>(File.ReadAllLines(filepath, Encoding.UTF8));
+	        }
+	        catch (IOException ioex)
+	        {
+	            Console.WriteLine("Error '{0}' reading {1}!", ioex.Message, filepath);
+	            return true;
+	        }
+
+	        var preCleanCount = lines.Count;
+
+	        ClearExistingPrefixes(lines);
+
+	        if (lines.Count != preCleanCount)
+	        {
+	            Console.WriteLine("{1} vendor-prefixed lines found in {0}", filepath, preCleanCount - lines.Count);
+	            var cleanFilePath = (filepath + CleanCssSuffix).Replace(PrefixedCssSuffix + CleanCssSuffix, CleanCssSuffix);
+	            File.WriteAllLines(cleanFilePath, lines, Encoding.UTF8);
+	            Console.WriteLine("Created {0}", cleanFilePath);
+	        }
+
+	        return false;
+	    }
 
 		private static void AddVendorPrefix(string prefix, IList<string> lines, Regex rxPropertyToPrefix)
 		{
